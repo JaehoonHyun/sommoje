@@ -96,7 +96,7 @@ namespace Sommoje.Action3D
             go.name = "ClickMarker";
             go.transform.localScale = new Vector3(0.6f, 0.02f, 0.6f);
             var r = go.GetComponent<Renderer>();
-            r.material = new Material(Shader.Find("Standard")) { color = new Color(1f, 0.95f, 0.4f) };
+            r.material = new Material(Shader.Find("Universal Render Pipeline/Lit")) { color = new Color(1f, 0.95f, 0.4f) };
             go.SetActive(false);
             return go.transform;
         }

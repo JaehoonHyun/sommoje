@@ -38,33 +38,36 @@ public static class TreeSetup
         var leafCol = Load($"{TexDir}/Cluster_leaf_RGBA.png");
         var leafNrm = Load($"{TexDir}/Cluster_Normal.png");
 
-        // 줄기 (불투명)
+        var urpLit = Shader.Find("Universal Render Pipeline/Lit");
+
+        // 줄기 (불투명, URP)
         var bark = AssetDatabase.LoadAssetAtPath<Material>($"{MatDir}/Bark_Mat.mat");
         if (bark != null)
         {
-            bark.SetTexture("_MainTex", barkCol);
+            bark.shader = urpLit;
+            bark.SetColor("_BaseColor", Color.white);   // 틴트 제거(노란줄기 방지)
+            bark.SetTexture("_BaseMap", barkCol);
             bark.SetTexture("_BumpMap", barkNrm);
             bark.EnableKeyword("_NORMALMAP");
-            bark.SetFloat("_Glossiness", 0.1f);
+            bark.SetFloat("_Smoothness", 0.1f);
             EditorUtility.SetDirty(bark);
         }
 
-        // 잎 클러스터 (알파 컷아웃)
+        // 잎 클러스터 (URP 알파 컷아웃)
         var leaf = AssetDatabase.LoadAssetAtPath<Material>($"{MatDir}/Cluster_Mat.mat");
         if (leaf != null)
         {
-            leaf.SetFloat("_Mode", 1f);
-            leaf.SetOverrideTag("RenderType", "TransparentCutout");
-            leaf.EnableKeyword("_ALPHATEST_ON");
-            leaf.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.One);
-            leaf.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.Zero);
-            leaf.SetInt("_ZWrite", 1);
-            leaf.renderQueue = 2450;
-            leaf.SetFloat("_Cutoff", 0.4f);
-            leaf.SetTexture("_MainTex", leafCol);
+            leaf.shader = urpLit;
+            leaf.SetColor("_BaseColor", Color.white);   // 틴트 제거
+            leaf.SetTexture("_BaseMap", leafCol);
             leaf.SetTexture("_BumpMap", leafNrm);
             leaf.EnableKeyword("_NORMALMAP");
-            leaf.SetFloat("_Glossiness", 0.15f);
+            leaf.SetFloat("_Smoothness", 0.1f);
+            leaf.SetFloat("_Surface", 0f);          // Opaque base + alpha clip
+            leaf.SetFloat("_AlphaClip", 1f);
+            leaf.EnableKeyword("_ALPHATEST_ON");
+            leaf.SetFloat("_Cutoff", 0.4f);
+            leaf.renderQueue = 2450;
             EditorUtility.SetDirty(leaf);
         }
 
@@ -85,6 +88,25 @@ public static class TreeSetup
     {
         if (AssetImporter.GetAtPath(p) is TextureImporter ti)
         { ti.alphaIsTransparency = true; ti.SaveAndReimport(); }
+    }
+
+    [MenuItem("Sommoje/Diagnose Tree Materials")]
+    public static void Diagnose()
+    {
+        var fbx = AssetDatabase.LoadAssetAtPath<GameObject>(FbxPath);
+        var inst = (GameObject)PrefabUtility.InstantiatePrefab(fbx);
+        var seen = new System.Collections.Generic.HashSet<string>();
+        foreach (var r in inst.GetComponentsInChildren<Renderer>())
+            foreach (var m in r.sharedMaterials)
+            {
+                if (m == null) { Debug.Log("[Sommoje] DIAG null material"); continue; }
+                string sh = m.shader != null ? m.shader.name : "<null>";
+                string path = AssetDatabase.GetAssetPath(m);
+                string key = m.name + "|" + sh;
+                if (seen.Add(key))
+                    Debug.Log($"[Sommoje] DIAG mat='{m.name}' shader='{sh}' path='{path}'");
+            }
+        Object.DestroyImmediate(inst);
     }
 
     [MenuItem("Sommoje/Inspect Tree Pack")]

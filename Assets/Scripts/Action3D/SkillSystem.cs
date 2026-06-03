@@ -184,7 +184,7 @@ namespace Sommoje.Action3D
 
         Material Mat(Color c)
         {
-            var m = new Material(Shader.Find("Standard"));
+            var m = new Material(Shader.Find("Universal Render Pipeline/Lit"));
             m.color = c;
             m.EnableKeyword("_EMISSION");
             m.SetColor("_EmissionColor", c * 0.6f);

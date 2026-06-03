@@ -2,7 +2,7 @@ using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.Rendering;
-using UnityEngine.Rendering.PostProcessing;
+using UnityEngine.Rendering.Universal;
 using Sommoje.Action3D;
 
 /// <summary>
@@ -14,7 +14,7 @@ public static class Action3DSceneBuilder
     const string SceneDir = "Assets/Scenes";
     const string ScenePath = SceneDir + "/Action3D.unity";
 
-    static Material Mat(Color c) => new(Shader.Find("Standard")) { color = c };
+    static Material Mat(Color c) => new(Shader.Find("Universal Render Pipeline/Lit")) { color = c };
 
     static GameObject Prim(PrimitiveType t, Vector3 pos, Vector3 scale, Color col, string name)
     {
@@ -64,6 +64,8 @@ public static class Action3DSceneBuilder
                 tree.transform.SetParent(null, false);
                 tree.transform.localScale = Vector3.one;
 
+                // LODGroup 제거: 항상 고해상 메시(LOD0)만 보이게 → 빌보드 LOD 미사용
+                foreach (var lg in tree.GetComponentsInChildren<LODGroup>()) Object.DestroyImmediate(lg);
                 var kill = new System.Collections.Generic.List<GameObject>();
                 foreach (var rr in tree.GetComponentsInChildren<Renderer>())
                     foreach (var mm in rr.sharedMaterials)
@@ -172,10 +174,10 @@ public static class Action3DSceneBuilder
         { ni.textureType = TextureImporterType.NormalMap; ni.SaveAndReimport(); }
         var norm = AssetDatabase.LoadAssetAtPath<Texture2D>(normPath);
 
-        _realRock = new Material(Shader.Find("Standard"));
-        _realRock.SetTexture("_MainTex", col);
+        _realRock = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+        _realRock.SetTexture("_BaseMap", col);
         if (norm != null) { _realRock.SetTexture("_BumpMap", norm); _realRock.EnableKeyword("_NORMALMAP"); }
-        _realRock.SetFloat("_Glossiness", 0.12f);
+        _realRock.SetFloat("_Smoothness", 0.12f);
         _realRock.SetFloat("_Metallic", 0f);
         _realRock.mainTextureScale = new Vector2(1.6f, 1.6f);
         return _realRock;
@@ -308,7 +310,7 @@ public static class Action3DSceneBuilder
         var lightGo = new GameObject("Directional Light");
         var l = lightGo.AddComponent<Light>();
         l.type = LightType.Directional;
-        l.intensity = 1.15f;
+        l.intensity = 1.5f;
         l.color = new Color(1f, 0.97f, 0.9f);
         l.shadows = LightShadows.Soft;
         lightGo.transform.rotation = Quaternion.Euler(50f, -30f, 0f);
@@ -383,17 +385,16 @@ public static class Action3DSceneBuilder
         go.transform.position = new Vector3(0f, WaterY, 0f);
         go.transform.localScale = Vector3.one * 8f;   // 80x80 (가장자리는 지형에 가려짐)
 
-        var m = new Material(Shader.Find("Standard"));
-        m.SetFloat("_Mode", 3f);                       // Transparent
-        m.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
-        m.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
-        m.SetInt("_ZWrite", 0);
-        m.DisableKeyword("_ALPHATEST_ON");
-        m.EnableKeyword("_ALPHABLEND_ON");
-        m.DisableKeyword("_ALPHAPREMULTIPLY_ON");
-        m.renderQueue = 3000;
+        var m = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+        m.SetFloat("_Surface", 1f);                    // Transparent
+        m.SetFloat("_Blend", 0f);                      // Alpha blend
+        m.SetFloat("_ZWrite", 0f);
+        m.SetFloat("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+        m.SetFloat("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+        m.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+        m.renderQueue = (int)UnityEngine.Rendering.RenderQueue.Transparent;
         m.color = new Color(0.15f, 0.38f, 0.55f, 0.82f);
-        m.SetFloat("_Glossiness", 0.95f);              // 매끈 → 하늘 반사
+        m.SetFloat("_Smoothness", 0.95f);              // 매끈 → 하늘 반사
         m.SetFloat("_Metallic", 0.1f);
 
         var normal = GenerateWaterNormal();
@@ -402,8 +403,39 @@ public static class Action3DSceneBuilder
         m.SetFloat("_BumpScale", 0.5f);
         m.SetTextureScale("_BumpMap", new Vector2(16f, 16f));   // 잔물결 타일링
 
+        // 에셋으로 저장: 런타임 임베디드 머티리얼은 투명 URP/Lit 셰이더 참조가
+        // 플레이모드에서 깨져 마젠타로 나올 수 있음 → .mat 에셋이면 안정적.
+        if (!AssetDatabase.IsValidFolder("Assets/Art/Materials"))
+            AssetDatabase.CreateFolder("Assets/Art", "Materials");
+        const string matPath = "Assets/Art/Materials/Water.mat";
+        AssetDatabase.DeleteAsset(matPath);
+        AssetDatabase.CreateAsset(m, matPath);
+        AssetDatabase.SaveAssets();
+
         go.GetComponent<Renderer>().sharedMaterial = m;
         go.AddComponent<WaterAnimator>();
+
+        EnsureAlwaysIncluded("Universal Render Pipeline/Lit");   // 투명 변형 보장
+    }
+
+    // 셰이더를 Graphics ▸ Always Included Shaders 에 추가(투명 등 희귀 변형 누락 방지)
+    static void EnsureAlwaysIncluded(string shaderName)
+    {
+        var shader = Shader.Find(shaderName);
+        if (shader == null) return;
+
+        var gs = AssetDatabase.LoadAssetAtPath<Object>("ProjectSettings/GraphicsSettings.asset");
+        if (gs == null) return;
+        var so = new SerializedObject(gs);
+        var arr = so.FindProperty("m_AlwaysIncludedShaders");
+
+        for (int i = 0; i < arr.arraySize; i++)
+            if (arr.GetArrayElementAtIndex(i).objectReferenceValue == shader) return;   // 이미 있음
+
+        arr.InsertArrayElementAtIndex(arr.arraySize);
+        arr.GetArrayElementAtIndex(arr.arraySize - 1).objectReferenceValue = shader;
+        so.ApplyModifiedProperties();
+        AssetDatabase.SaveAssets();
     }
 
     /// <summary>물결용 노멀맵을 코드로 생성(이음새 없는 사인파 합성).</summary>
@@ -448,38 +480,31 @@ public static class Action3DSceneBuilder
     static void SetupPostProcessing(Camera cam)
     {
         cam.allowHDR = true;
+        var camData = cam.GetUniversalAdditionalCameraData();
+        if (camData != null) camData.renderPostProcessing = true;
 
-        var layer = cam.gameObject.AddComponent<PostProcessLayer>();
-        var res = AssetDatabase.LoadAssetAtPath<PostProcessResources>(
-            "Packages/com.unity.postprocessing/PostProcessing/PostProcessResources.asset");
-        if (res != null) layer.Init(res);
-        layer.volumeTrigger = cam.transform;
-        layer.volumeLayer = 1 << 0;   // Default
-        layer.antialiasingMode = PostProcessLayer.Antialiasing.FastApproximateAntialiasing;
+        var profile = ScriptableObject.CreateInstance<VolumeProfile>();
 
-        var profile = ScriptableObject.CreateInstance<PostProcessProfile>();
+        var tone = profile.Add<Tonemapping>(true);
+        tone.mode.overrideState = true; tone.mode.value = TonemappingMode.ACES;
 
-        var cg = profile.AddSettings<ColorGrading>();
-        cg.tonemapper.overrideState = true; cg.tonemapper.value = Tonemapper.ACES;
-        cg.saturation.overrideState = true; cg.saturation.value = 18f;
-        cg.contrast.overrideState = true;   cg.contrast.value = 12f;
+        var ca = profile.Add<ColorAdjustments>(true);
+        ca.postExposure.overrideState = true; ca.postExposure.value = 0.7f;   // ACES 보정(밝게)
+        ca.saturation.overrideState = true; ca.saturation.value = 14f;
+        ca.contrast.overrideState = true;   ca.contrast.value = 10f;
 
-        var ao = profile.AddSettings<AmbientOcclusion>();
-        ao.mode.overrideState = true;      ao.mode.value = AmbientOcclusionMode.ScalableAmbientObscurance;
-        ao.intensity.overrideState = true; ao.intensity.value = 0.75f;
-
-        var bloom = profile.AddSettings<Bloom>();
-        bloom.intensity.overrideState = true; bloom.intensity.value = 1.0f;
+        var bloom = profile.Add<Bloom>(true);
+        bloom.intensity.overrideState = true; bloom.intensity.value = 0.7f;
         bloom.threshold.overrideState = true; bloom.threshold.value = 1.1f;
 
-        var vig = profile.AddSettings<Vignette>();
-        vig.intensity.overrideState = true; vig.intensity.value = 0.12f;
+        var vig = profile.Add<Vignette>(true);
+        vig.intensity.overrideState = true; vig.intensity.value = 0.18f;
 
-        AssetDatabase.DeleteAsset("Assets/Art/pp_profile.asset");
-        AssetDatabase.CreateAsset(profile, "Assets/Art/pp_profile.asset");
+        AssetDatabase.DeleteAsset("Assets/Art/pp_urp.asset");
+        AssetDatabase.CreateAsset(profile, "Assets/Art/pp_urp.asset");
 
         var volGo = new GameObject("PostProcessVolume");
-        var vol = volGo.AddComponent<PostProcessVolume>();
+        var vol = volGo.AddComponent<Volume>();
         vol.isGlobal = true;
         vol.sharedProfile = profile;
     }
@@ -506,7 +531,7 @@ public static class Action3DSceneBuilder
 
         RenderSettings.skybox = sky;
         RenderSettings.ambientMode = AmbientMode.Skybox;   // 하늘에서 자연광(IBL)
-        RenderSettings.ambientIntensity = 0.95f;           // 숲 그늘 밝게
+        RenderSettings.ambientIntensity = 1.25f;           // 숲 그늘 밝게
         DynamicGI.UpdateEnvironment();
     }
 
@@ -748,6 +773,25 @@ public static class Action3DSceneBuilder
         }
 
         EditorApplication.Exit(0);
+    }
+
+    [MenuItem("Sommoje/Audit Scene Shaders")]
+    public static void AuditShaders()
+    {
+        EditorSceneManager.OpenScene(ScenePath, OpenSceneMode.Single);
+        var seen = new System.Collections.Generic.HashSet<string>();
+        foreach (var r in Object.FindObjectsByType<Renderer>(FindObjectsSortMode.None))
+            foreach (var m in r.sharedMaterials)
+            {
+                if (m == null) continue;
+                string sh = m.shader != null ? m.shader.name : "<null>";
+                if (sh.StartsWith("Universal Render Pipeline")) continue;   // URP는 정상
+                string root = r.transform.root.name;
+                string key = root + "|" + m.name + "|" + sh;
+                if (seen.Add(key))
+                    Debug.Log($"[Sommoje] NONURP root='{root}' go='{r.gameObject.name}' mat='{m.name}' shader='{sh}'");
+            }
+        Debug.Log("[Sommoje] shader audit done");
     }
 
     [MenuItem("Sommoje/Capture Action3D Preview")]
